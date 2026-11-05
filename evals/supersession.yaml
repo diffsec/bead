@@ -1,0 +1,66 @@
+# Each scenario changes a value and then asks for it. The old and new values
+# share most of their words, which is the case where similarity retrieval
+# returns the stale value.
+scenarios:
+  - name: language-change
+    steps:
+      - write: {key: project/demo/language, body: "The demo project is written in Python."}
+      - write: {key: project/demo/language, body: "The demo project is written in Go. The Python version was retired."}
+      - query: {text: "what language is the demo project written in", expect: "written in Go"}
+
+  - name: db-port
+    steps:
+      - write: {key: project/demo/db-port, body: "The local Postgres database listens on port 5432."}
+      - write: {key: project/demo/db-port, body: "The local Postgres database listens on port 5433."}
+      - query: {text: "postgres port", expect: "5433"}
+
+  - name: editor-preference
+    steps:
+      - write: {key: user/editor, type: user, body: "The user edits code in VS Code."}
+      - write: {key: user/editor, type: user, body: "The user edits code in Zed."}
+      - query: {text: "which editor does the user use for code", expect: "Zed"}
+
+  - name: test-command-three-versions
+    steps:
+      - write: {key: project/demo/test-command, body: "Run the tests with make test."}
+      - write: {key: project/demo/test-command, body: "Run the tests with go test ./... from the repo root."}
+      - write: {key: project/demo/test-command, body: "Run the tests with task test, which wraps go test with the race detector."}
+      - query: {text: "how do I run the tests", expect: "task test"}
+
+  - name: deploy-target
+    steps:
+      - write: {key: project/demo/deploy-target, body: "Production deploys go to the us-east-1 ECS cluster."}
+      - write: {key: project/demo/deploy-target, body: "Production deploys go to the ap-southeast-2 EKS cluster."}
+      - query: {text: "where do production deploys go", expect: "ap-southeast-2"}
+
+  - name: feedback-reversal
+    steps:
+      - write: {key: user/commit-style, type: feedback, body: "Write commit messages in the imperative mood with no body."}
+      - write: {key: user/commit-style, type: feedback, body: "Write commit messages in the imperative mood with a body that explains why."}
+      - query: {text: "how should commit messages be written", expect: "explains why"}
+
+  - name: owner-change
+    steps:
+      - write: {key: project/demo/owner, body: "The payments service is owned by the platform team."}
+      - write: {key: project/demo/owner, body: "The payments service is owned by the ledger team."}
+      - query: {text: "who owns the payments service", expect: "ledger"}
+
+  - name: unrelated-noise
+    steps:
+      - write: {key: project/demo/ci, body: "CI runs on GitHub Actions."}
+      - write: {key: project/demo/node-version, body: "The frontend uses Node 20."}
+      - write: {key: project/demo/node-version, body: "The frontend uses Node 22 after the upgrade."}
+      - query: {text: "node version for the frontend", expect: "Node 22"}
+      - query: {text: "which CI system", expect: "GitHub Actions"}
+
+  - name: api-base-url
+    steps:
+      - write: {key: project/demo/api-url, body: "The staging API base URL is https://staging.example.com/v1."}
+      - write: {key: project/demo/api-url, body: "The staging API base URL is https://staging.example.com/v2."}
+      - query: {text: "staging api base url", expect: "/v2"}
+
+  - name: reference-link
+    steps:
+      - write: {key: global/runbook, type: reference, body: "The on-call runbook is in Confluence under SRE/Runbooks."}
+      - write: {key: global/runbook, type: reference, body: "The on-call runbook moved to the repo at docs/runbook.md."}
+      - query: {text: "where is the on-call runbook", expect: "docs/runbook.md"}
