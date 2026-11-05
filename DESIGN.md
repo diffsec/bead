@@ -137,12 +137,14 @@ Start the proxy with `bead proxy`. Then start the harness with `ANTHROPIC_BASE_U
 
 ### Service and shell setup
 
-`bead setup` does four steps on macOS:
+`bead setup` is the one command that sets up a machine. It does these steps on macOS:
 
-1. It writes `~/Library/LaunchAgents/com.bead.proxy.plist`. The agent starts the proxy at login and restarts it if it exits (`RunAtLoad` and `KeepAlive`). The log is `~/.bead/proxy.log`.
-2. It writes `com.bead.dream.plist` for the nightly run. `--no-dream` skips this step.
-3. It loads both agents with `launchctl bootout` and `launchctl bootstrap`. `--no-load` skips this step.
-4. It writes `~/.bead/shell.sh`, and adds a marked block to `~/.zshrc` or `~/.bashrc` that sources it. `--no-rc` skips the rc change. A second run changes nothing.
+1. It writes a default `~/.bead/config.yaml` with mode `0600` if none exists. It never changes an existing file. The default uses Ollama with no model, so the dream job reports the missing model until you set one.
+2. If the vault does not exist and a person is at the terminal, it offers to create it and asks for the passphrase twice. In a script it prints a hint instead. `--no-vault` skips this step.
+3. It writes `~/Library/LaunchAgents/com.bead.proxy.plist`. The agent starts the proxy at login and restarts it if it exits (`RunAtLoad` and `KeepAlive`). The log is `~/.bead/proxy.log`.
+4. It writes `com.bead.dream.plist` for the nightly run. `--no-dream` skips this step.
+5. It loads both agents with `launchctl bootout` and `launchctl bootstrap`. `--no-load` skips this step.
+6. It writes `~/.bead/shell.sh`, and adds a marked block to `~/.zshrc` or `~/.bashrc` that sources it. `--no-rc` skips the rc change. A second run changes nothing.
 
 `shell.sh` defines a `claude` shell function. The function checks `GET /bead/health` on the proxy with a timeout of 1 second. If the proxy answers, the function runs Claude Code with `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`. If the proxy does not answer, the function prints a warning and runs Claude Code directly, so a stopped proxy never blocks work. The function sets no credential, so the subscription login stays active.
 

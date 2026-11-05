@@ -5,13 +5,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
+	"golang.org/x/term"
+
 	"github.com/diffsec/bead/internal/fsutil"
+	"github.com/diffsec/bead/internal/memory"
 )
 
 const (
@@ -86,12 +90,54 @@ func addRCBlock(rc, snippetPath string) (bool, error) {
 	return true, nil
 }
 
-func cmdSetup(ctx context.Context, args []string, out *printer) error {
+// defaultConfig is the config.yaml that setup writes when none exists. It
+// is valid as written: the dream job reports the missing model when it
+// runs, and the proxy does not need a model.
+const defaultConfig = `# bead configuration. DESIGN.md, "Nightly dream job", describes every field.
+dream:
+  # The model for the nightly dream job: ollama, anthropic or openai.
+  # openai means any OpenAI-compatible endpoint; set base_url to its /v1 root.
+  provider: ollama
+
+  # Required for ollama and openai. For Ollama, pull a chat model first:
+  #   ollama pull qwen3:8b
+  model: ""
+
+  # base_url: http://127.0.0.1:11434
+
+  # For a hosted provider, give the key through one of these. launchd does
+  # not pass shell variables, so the nightly run needs api_key_command.
+  # Never put the key itself in this file.
+  # api_key_env: OPENAI_API_KEY
+  # api_key_command: security find-generic-password -s bead-openai -w
+
+  decay_days: 60         # unused facts become dormant after this many days
+  max_chunk_chars: 24000 # transcript characters per model call
+  hour: 3                # local hour for the nightly run
+`
+
+// writeDefaultConfig writes config.yaml if it does not exist. It reports
+// whether it wrote the file. It never changes an existing file.
+func writeDefaultConfig(home string) (string, bool, error) {
+	path := filepath.Join(home, "config.yaml")
+	if _, err := os.Stat(path); err == nil {
+		return path, false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return path, false, err
+	}
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return path, false, err
+	}
+	return path, true, fsutil.WriteAtomic(path, []byte(defaultConfig))
+}
+
+func cmdSetup(ctx context.Context, args []string, stdin io.Reader, out *printer) (err error) {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	listen := fs.String("listen", "127.0.0.1:7077", "proxy listen address")
 	noRC := fs.Bool("no-rc", false, "write the shell snippet but do not change the shell rc file")
 	noLoad := fs.Bool("no-load", false, "write the launchd agents but do not load them")
 	noDream := fs.Bool("no-dream", false, "do not schedule the nightly dream job")
+	noVault := fs.Bool("no-vault", false, "do not offer to create the vault")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -110,7 +156,26 @@ func cmdSetup(ctx context.Context, args []string, out *printer) error {
 		return err
 	}
 
-	// 1. The proxy agent, and the dream agent.
+	// 1. The configuration file, and the vault.
+	cfgPath, wrote, err := writeDefaultConfig(h)
+	if err != nil {
+		return err
+	}
+	if wrote {
+		out.f("Wrote %s. Set dream.model in it before the first nightly run.\n", cfgPath)
+	} else {
+		out.f("Kept the existing %s.\n", cfgPath)
+	}
+	m, err := open(ctx)
+	if err != nil {
+		return err
+	}
+	vaultErr := setupVault(m, *noVault, stdin, out)
+	if err := errors.Join(vaultErr, m.Close()); err != nil {
+		return err
+	}
+
+	// 2. The proxy agent, and the dream agent.
 	if err := cmdProxyInstall([]string{"--listen", *listen}, out); err != nil {
 		return err
 	}
@@ -130,7 +195,7 @@ func cmdSetup(ctx context.Context, args []string, out *printer) error {
 		}
 	}
 
-	// 2. The shell snippet and the rc block.
+	// 3. The shell snippet and the rc block.
 	snippet := filepath.Join(h, "shell.sh")
 	if err := fsutil.WriteAtomic(snippet, []byte(shellSnippet("http://"+*listen))); err != nil {
 		return err
@@ -166,4 +231,25 @@ func loadAgent(ctx context.Context, homeDir, label string) error {
 		return fmt.Errorf("launchctl bootstrap %s: %v: %s", label, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// setupVault offers to create the vault when it does not exist and a
+// person is at the terminal. A script gets a hint instead of a prompt.
+func setupVault(m *memory.Memory, skip bool, stdin io.Reader, out *printer) error {
+	if m.Vault.Initialized() {
+		out.ln("The vault exists.")
+		return nil
+	}
+	if skip {
+		return nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		out.ln("The vault does not exist. Run `bead vault init` to create it for sealed facts.")
+		return nil
+	}
+	if !confirm(stdin, out, "Create the vault for sealed facts now? You choose a passphrase that cannot be recovered.") {
+		out.ln("Skipped the vault. Run `bead vault init` later.")
+		return nil
+	}
+	return initVault(m.Vault, stdin, out)
 }

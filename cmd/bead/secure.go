@@ -177,6 +177,11 @@ func cmdVault(ctx context.Context, args []string, stdin io.Reader, out *printer)
 	if m.Vault.Initialized() {
 		return vault.ErrExists
 	}
+	return initVault(m.Vault, stdin, out)
+}
+
+// initVault asks for a new passphrase twice and creates the key pair.
+func initVault(v *vault.Vault, stdin io.Reader, out *printer) error {
 	pass, err := readSecret(stdin, "New vault passphrase (12 or more characters): ")
 	if err != nil {
 		return err
@@ -188,7 +193,7 @@ func cmdVault(ctx context.Context, args []string, stdin io.Reader, out *printer)
 	if pass != again {
 		return errors.New("vault: the passphrases do not match")
 	}
-	if err := m.Vault.Init(pass); err != nil {
+	if err := v.Init(pass); err != nil {
 		return err
 	}
 	out.ln("Vault initialized. If you lose the passphrase, the sealed facts cannot be recovered.")

@@ -32,9 +32,11 @@ import (
 const usage = `usage: bead <command> [flags] [args]
 
 commands:
-  setup   [--no-rc] [--no-load] [--no-dream]
-          Install and load the proxy and dream agents, and add a claude
-          shell function that routes Claude Code through the proxy.
+  setup   [--no-rc] [--no-load] [--no-dream] [--no-vault]
+          Set up this machine in one step: write a default config.yaml if
+          none exists, offer to create the vault, install and load the
+          proxy and dream agents, and add a claude shell function that
+          routes Claude Code through the proxy.
   write   --key KEY [--type T] [--trust T] [--sensitivity S] [--tag T] [--source S] [--pin] [BODY]
           Record a value for KEY. BODY comes from stdin if no argument is given.
   get     KEY                     Print the current version of KEY.
@@ -177,7 +179,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, out *printer) erro
 	case "queue":
 		return cmdQueue(ctx, rest, out)
 	case "setup":
-		return cmdSetup(ctx, rest, out)
+		return cmdSetup(ctx, rest, stdin, out)
 	}
 	return fmt.Errorf("unknown command %q\n\n%s", cmd, usage)
 }

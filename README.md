@@ -19,7 +19,14 @@ go install github.com/diffsec/bead/cmd/bead@latest
 bead setup
 ```
 
-`bead setup` installs the proxy and the nightly job as launchd agents, and adds a `claude` shell function that routes Claude Code through the proxy. Open a new terminal after the setup.
+`bead setup` sets up the machine in one step:
+
+- It writes a default `~/.bead/config.yaml` if none exists.
+- It offers to create the vault for sealed facts.
+- It installs and loads the proxy and the nightly job as launchd agents.
+- It adds a `claude` shell function that routes Claude Code through the proxy.
+
+Run it again at any time. It keeps an existing configuration and vault. Open a new terminal after the setup.
 
 ## Configure the dream model
 
