@@ -1,0 +1,115 @@
+# Cue-triggered injection eval. Each turn is the cue text the proxy builds:
+# the newest user message, plus the assistant's text and tool calls before
+# it. "expect" lists facts that must be injected. "allow" lists facts that
+# are reasonable either way and count as neither a hit nor a false
+# injection. Every other injected fact is a false injection.
+project: demo
+facts:
+  db-port: "The local Postgres database listens on port 5434."
+  test-command: "Run the tests with `task test`, which wraps go test with the race detector."
+  deploy: "Production deploys run from the deploy-prod Buildkite pipeline. Never deploy from a laptop."
+  migrations: "Database migrations live in db/migrations and run with `task migrate`."
+  api-auth: "The API authenticates requests with JWTs signed by the auth service. The signing keys rotate weekly."
+  flaky: "TestLedgerReconcile in ledger_test.go is flaky under -race. Rerun it once before investigating."
+  config: "Configuration loads config/base.yaml first, then config/{env}.yaml overrides it."
+  logging: "Use slog with the JSON handler for logs. Do not use fmt.Println for logging."
+  frontend: "The frontend in web/ uses Node 22 and pnpm, not npm."
+  ci: "CI runs on Buildkite, not GitHub Actions."
+  owner: "The payments service is owned by the ledger team. Ask for reviews in #ledger."
+  staging-url: "The staging API base URL is https://staging.example.com/v2."
+  lint: "Run golangci-lint with the repo config in .golangci.yml before committing."
+  redis: "Redis runs locally on port 6380 for the rate limiter."
+  flags: "Feature flags are managed in LaunchDarkly. The SDK key comes from the LD_SDK_KEY variable."
+  protobuf: "Regenerate protobuf code with `buf generate` after editing files in proto/."
+  runbook: "The on-call runbook is at docs/runbook.md."
+  error-wrap: "Wrap errors with fmt.Errorf and %w, and never discard an error with _."
+turns:
+  # Questions that name the topic.
+  - cue: "what port is postgres on locally"
+    expect: [db-port]
+  - cue: "how do I run the test suite"
+    expect: [test-command]
+  - cue: "add a new migration for the invoices table"
+    expect: [migrations]
+  - cue: "ship this to production"
+    expect: [deploy]
+  - cue: "who should review changes to the payments service"
+    expect: [owner]
+  - cue: "the staging api returns 404 on /v1/invoices"
+    expect: [staging-url]
+  - cue: "add some logging to the reconcile job"
+    expect: [logging]
+  - cue: "where is the on-call runbook"
+    expect: [runbook]
+  - cue: "wire up a feature flag for the new invoice view"
+    expect: [flags]
+  - cue: "lint the code before I commit"
+    expect: [lint]
+  - cue: "how does config get loaded for staging"
+    expect: [config]
+    allow: [staging-url]
+  - cue: "JWT validation fails with key not found"
+    expect: [api-auth]
+  - cue: "TestLedgerReconcile failed again on CI"
+    expect: [flaky]
+    allow: [ci]
+  - cue: "which CI system do we use"
+    expect: [ci]
+    allow: [deploy]
+
+  # Tool calls and tool output, as the proxy sees them.
+  - cue: |
+      I will check the database.
+      [tool_use Bash] {"command": "psql -h localhost -p 5432 demo"}
+      [tool_result] psql: error: connection to server at "localhost", port 5432 failed: Connection refused
+    expect: [db-port]
+  - cue: |
+      [tool_use Edit] {"file_path": "proto/ledger.proto", "old_string": "int32 amount = 2;", "new_string": "int64 amount = 2;"}
+      [tool_result] The file proto/ledger.proto has been updated.
+    expect: [protobuf]
+  - cue: |
+      [tool_use Bash] {"command": "go run ./cmd/api"}
+      [tool_result] ratelimit: redis: dial tcp 127.0.0.1:6379: connect: connection refused
+    expect: [redis]
+  - cue: |
+      [tool_use Bash] {"command": "cd web && npm install"}
+      [tool_result] npm warn deprecated
+    expect: [frontend]
+  - cue: |
+      [tool_use Bash] {"command": "go test ./..."}
+      [tool_result] --- FAIL: TestLedgerReconcile (0.31s)
+    expect: [flaky]
+    allow: [test-command]
+  - cue: |
+      [tool_use Bash] {"command": "go test ./internal/api/..."}
+    expect: [test-command]
+
+  # Turns that need no memory.
+  - cue: "rename this variable to something clearer"
+  - cue: "explain what this function does"
+  - cue: "thanks, looks good"
+  - cue: "write a haiku about the sea"
+  - cue: "fix the typo in the README"
+  - cue: "run it again"
+  - cue: "what is the time complexity of this loop"
+  - cue: "use a map instead of a slice here"
+  - cue: "delete the unused import"
+  - cue: "update the changelog for this release"
+  - cue: "the port number in the docs is wrong"
+    allow: [db-port, redis]
+  - cue: "add a unit test for the parser"
+    allow: [test-command]
+  - cue: |
+      [tool_use Bash] {"command": "git status"}
+      [tool_result] On branch main. Nothing to commit, working tree clean.
+  - cue: |
+      [tool_use Read] {"file_path": "internal/parser/parser.go"}
+      [tool_result] package parser // Parse reads a token stream and returns an AST.
+  - cue: |
+      [tool_use Bash] {"command": "ls"}
+      [tool_result] README.md cmd go.mod go.sum internal
+  - cue: "make the error message more specific"
+    allow: [error-wrap]
+  - cue: "can you run the build"
+  - cue: "split this file into two packages"
+  - cue: "what does the readme say about setup"

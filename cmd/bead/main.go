@@ -386,11 +386,15 @@ func cmdProxy(ctx context.Context, args []string, out *printer) (err error) {
 	upstream := fs.String("upstream", "https://api.anthropic.com", "Anthropic API base URL")
 	project := fs.String("project", "", "project name when the request does not name one")
 	noInject := fs.Bool("no-inject", false, "capture turns but do not inject memory")
+	tracePath := fs.String("trace", "", "append one JSON line per request to this file")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if err := requireLoopback(*listen); err != nil {
 		return err
+	}
+	if *tracePath == "" {
+		*tracePath = os.Getenv("BEAD_TRACE")
 	}
 	up, err := url.Parse(*upstream)
 	if err != nil || (up.Scheme != "https" && up.Scheme != "http") || up.Host == "" {
@@ -406,7 +410,7 @@ func cmdProxy(ctx context.Context, args []string, out *printer) (err error) {
 	srv := &http.Server{
 		Addr: *listen,
 		Handler: proxy.New(proxy.Options{
-			Upstream: up, Memory: m, DefaultProject: *project, Logger: logger, Inject: !*noInject,
+			Upstream: up, Memory: m, DefaultProject: *project, Logger: logger, Inject: !*noInject, TracePath: *tracePath,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

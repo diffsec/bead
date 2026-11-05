@@ -276,6 +276,13 @@ func (m *Memory) Forget(ctx context.Context, key string) (rep ForgetReport, err 
 			return rep, err
 		}
 	}
+	match := textMatcher(rep.Versions)
+	if _, err := m.forgetSessions(func(l string) bool {
+		t := lineText(l)
+		return match(t) || strings.Contains(t, key+"@")
+	}); err != nil {
+		return rep, err
+	}
 	return rep, m.Index.DeleteRaw(ctx, rep.Turns)
 }
 
@@ -346,6 +353,9 @@ func (m *Memory) ForgetMatching(ctx context.Context, text string) (MatchPlan, []
 		return p, redacted, err
 	}
 	if _, err := m.dropReviewWhere(func(it ReviewItem) bool { return raw.Contains(it.Body, text) }); err != nil {
+		return p, redacted, err
+	}
+	if _, err := m.forgetSessions(func(l string) bool { return raw.Contains(lineText(l), text) }); err != nil {
 		return p, redacted, err
 	}
 	redacted = append(redacted, ids...)

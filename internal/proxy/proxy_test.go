@@ -61,10 +61,11 @@ func (u *upstream) last(t *testing.T) map[string]any {
 }
 
 type fixture struct {
-	mem  *memory.Memory
-	home string
-	up   *upstream
-	srv  *httptest.Server
+	mem    *memory.Memory
+	home   string
+	up     *upstream
+	srv    *httptest.Server
+	up2URL string
 }
 
 func setup(t *testing.T) *fixture {
@@ -102,7 +103,7 @@ func setup(t *testing.T) *fixture {
 	p := New(Options{Upstream: u, Memory: mem, Inject: true, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	srv := httptest.NewServer(p)
 	t.Cleanup(srv.Close)
-	return &fixture{mem: mem, home: home, up: up, srv: srv}
+	return &fixture{mem: mem, home: home, up: up, srv: srv, up2URL: upSrv.URL}
 }
 
 func (f *fixture) post(t *testing.T, path, body string, hdr map[string]string) (*http.Response, []byte) {

@@ -127,10 +127,16 @@ Start the proxy with `bead proxy`. Then start the harness with `ANTHROPIC_BASE_U
 - The session is the `X-Bead-Session` header. If that is absent, the session is Claude Code's `x-claude-code-session-id` header. For a subagent, a hash of `x-claude-code-agent-id` is added. If both are absent, the session is a hash of the system prompt and the first message. A harness resends the full conversation each turn, so this prefix is stable.
 - The proxy appends blocks by splicing them into the raw JSON array. Existing blocks keep their exact bytes. Claude Code puts an attribution block first in `system`, and `api.anthropic.com` strips it only when it arrives unchanged in that position ([gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol#system-prompt-attribution-block)). `cache_control` markers also stay in place.
 - The project is the `X-Bead-Project` header. If the header is absent, the project is the base name of the `working directory:` path in the system prompt. Then the `--project` flag applies.
-- The pinned block is built on the first request of a session and kept in memory. A fact written during the session does not appear in the pinned block until the next session. This keeps the system prompt byte-identical for the cache.
-- Cues are the newest user message and the tool calls in the assistant message before it. Tool results are cut to 1,500 characters. `<system-reminder>` blocks are removed, because a harness repeats them every turn.
-- BM25 ranks the hits but does not show whether the top hit is relevant. A fact is injected only if the cues contain at least 25% of the terms in its body. For text over 8 terms the divisor grows with the square root of the length. The 25% value is a starting point and needs an eval.
-- The recall block holds up to 6 facts and up to 2 excerpts of raw turns from other sessions. The excerpt label says that a stored fact takes precedence over an excerpt.
+- The proxy keeps a state file for each conversation in `~/.bead/sessions/<session>-<thread>.jsonl`. The thread is a hash of the first message, which separates side requests that share the session header. The file records the pinned block, every recall block with the message it went into, the injected fact and raw IDs, and the last captured message index. The proxy reads it on each request, so a proxy restart or a `bead forget` in another process takes effect at once.
+- The harness resends earlier turns without the blocks that the proxy added. The proxy therefore adds every earlier recall block again, at the same message, with the same bytes. Without this, the prompt cache misses from the first injected turn to the end of the conversation. `TestClaudeCodeShape` checks that the earlier messages are byte-identical between turns.
+- A fact or raw excerpt is injected once per conversation, because the earlier block stays in the context. A retry of a request sends the same bytes and captures nothing twice.
+- The pinned block is built on the first request of a conversation and stored in the state file. A fact written during the conversation does not appear in it until the next conversation.
+- `forget` removes matching lines from the state files, so the proxy stops adding a forgotten value. This costs one cache miss at that point.
+- `bead proxy --trace FILE`, or `BEAD_TRACE`, appends one JSON line per request: the message roles, the cues, the injected IDs and the rejected candidates with their scores.
+- Claude Code ends each request with `role: "system"` messages after the newest user message. The proxy skips them to find the newest user turn. It finds the working directory in the system prompt, in a system message, or in the first user message.
+- Cues are the newest user message, plus the text and tool calls of the assistant message before it. Tool results are cut to 1,500 characters. `<system-reminder>` blocks, tool labels and JSON field names such as `"command"` are removed, because they repeat in every turn.
+- Fact selection is in `internal/recall`. BM25 finds candidates. The evidence score then adds up the IDF weight of each fact term (body and the last key segment) that the cues contain, scaled so that a term only one fact has weighs 1. A short list of generic development words weighs 0.2. A fact needs a score of 1.0 or more, and at least half the score of the best candidate. Up to 6 facts are injected.
+- Raw excerpts still use the term-coverage check at 0.25, and up to 2 excerpts from other sessions are injected.
 - Capture writes the user turn before forwarding and the assistant turn when the response body ends. It skips thinking blocks. The client gets the response bytes unchanged, including server-sent events.
 - `POST /v1/messages` is the only path that the proxy changes. Other paths, such as `/v1/messages/count_tokens`, pass through unchanged.
 - If the body is not valid JSON or injection fails, the proxy forwards the original body.
@@ -321,6 +327,16 @@ The set starts with about 50 scripted sessions, each with a known fact change an
 
 The suite is small and hand-written, so the numbers show that the rule works. They do not measure retrieval quality.
 
+`evals/injection.yaml` measures cue-triggered injection: 18 facts and 39 turns. The turns include direct questions, tool calls with their output, and 19 turns that need no memory. `TestInjectionSweep` runs every scorer and threshold and fails if the default drops below recall 0.9 or rises above a false-turn rate of 0.1.
+
+| Scorer | Threshold | Recall | Precision | Turns with a false injection |
+| --- | --- | --- | --- | --- |
+| coverage (old default) | 0.25 | 0.55 | 0.69 | 13% |
+| evidence (default) | 1.0 | 1.00 | 0.87 | 8% |
+| evidence | 1.2 | 0.70 | 0.93 | 3% |
+
+I wrote this suite and tuned the scorer against it, so these numbers are optimistic. The generic word list and the cue cleaning came from failures in this suite. A held-out suite built from real traces is the next eval to write.
+
 ## Build order
 
 1. Store, supersession rule, BM25 index, CLI and eval harness. Done.
@@ -352,5 +368,7 @@ File locking uses `flock` and is implemented for unix only.
 - `forget KEY` finds raw turns only by citation or by exact value text. A paraphrase stays until `forget --match` removes it.
 - Deleted files are unlinked, not overwritten. On APFS and on SSDs, overwriting does not erase the old blocks either. Full-disk encryption is the control for data at rest.
 - The curation session sends fact values and the matching turn text to the model provider. Sealed values are not sent.
-- The coverage threshold and the recall limits have no eval yet. A false-injection suite is the next eval to write.
+- The injection eval is hand-written and was used for tuning. It needs a held-out set from real traces.
+- IDF is computed over the stored facts only. With few facts it is noisy. Raw history as a background corpus would make it steadier.
+- The proxy stores state files for every conversation and never deletes them.
 - The proxy does not read the `cache_control` breakpoints. It relies on two facts: it appends to the end of the system prompt, and it changes only the newest user message.

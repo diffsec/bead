@@ -252,3 +252,62 @@ func (m *Memory) reinforceRevives(ctx context.Context, f *fact.Fact) error {
 	_, err := m.SetStatus(ctx, f.Key, fact.StatusCurrent)
 	return err
 }
+
+// SessionsDir is where the proxy keeps the state of each conversation.
+func (m *Memory) SessionsDir() string { return filepath.Join(m.Home, "sessions") }
+
+// forgetSessions removes every proxy state line whose text matches. The
+// proxy then stops adding that block to later requests. A removed pinned
+// line is built again from the current facts on the next request.
+func (m *Memory) forgetSessions(match func(line string) bool) (int, error) {
+	entries, err := os.ReadDir(m.SessionsDir())
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		path := filepath.Join(m.SessionsDir(), e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return removed, err
+		}
+		var kept []string
+		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		for _, l := range lines {
+			if l != "" && match(l) {
+				removed++
+				continue
+			}
+			kept = append(kept, l)
+		}
+		if len(kept) == len(lines) {
+			continue
+		}
+		out := strings.Join(kept, "\n")
+		if out != "" {
+			out += "\n"
+		}
+		if err := fsutil.WriteAtomic(path, []byte(out)); err != nil {
+			return removed, err
+		}
+	}
+	return removed, nil
+}
+
+// lineText returns the block text of a state line, for value matching.
+func lineText(line string) string {
+	var e struct {
+		Block string   `json:"block"`
+		IDs   []string `json:"ids"`
+	}
+	if json.Unmarshal([]byte(line), &e) != nil {
+		return line
+	}
+	return e.Block + "\n" + strings.Join(e.IDs, "\n")
+}

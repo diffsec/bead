@@ -161,10 +161,20 @@ func truncate(s string, n int) string {
 // systemText returns the system prompt as plain text.
 func (r *request) systemText() string { return contentText(r.system, 0) }
 
-// lastUser returns the index of the newest message if it is a user turn.
+// lastUser returns the index of the newest user message. Claude Code
+// appends role "system" messages after it, so those are skipped. If an
+// assistant message comes first, the request is not a new user turn and
+// the result is -1.
 func (r *request) lastUser() int {
-	if n := len(r.messages); n > 0 && r.messages[n-1].str("role") == "user" {
-		return n - 1
+	for i := len(r.messages) - 1; i >= 0; i-- {
+		switch r.messages[i].str("role") {
+		case "user":
+			return i
+		case "system":
+			continue
+		default:
+			return -1
+		}
 	}
 	return -1
 }
@@ -180,17 +190,35 @@ func (r *request) cues() string {
 		return ""
 	}
 	var parts []string
-	if i > 0 && r.messages[i-1].str("role") == "assistant" {
-		if bs, err := blocks(r.messages[i-1]["content"]); err == nil {
+	if a := r.prevAssistant(i); a >= 0 {
+		if bs, err := blocks(r.messages[a]["content"]); err == nil {
 			for _, b := range bs {
-				if b.str("type") == "tool_use" {
+				switch b.str("type") {
+				case "tool_use":
 					parts = append(parts, blockText(b, 500))
+				case "text":
+					parts = append(parts, truncate(b.str("text"), 500))
 				}
 			}
 		}
 	}
 	parts = append(parts, contentText(r.messages[i]["content"], 1500))
 	return truncate(reminderRe.ReplaceAllString(strings.Join(parts, "\n"), ""), 4000)
+}
+
+// prevAssistant returns the index of the assistant message before message
+// i, skipping system messages, or -1.
+func (r *request) prevAssistant(i int) int {
+	for j := i - 1; j >= 0; j-- {
+		switch r.messages[j].str("role") {
+		case "assistant":
+			return j
+		case "system":
+			continue
+		}
+		return -1
+	}
+	return -1
 }
 
 // userTurnText is the newest user message as it goes into the raw log.
@@ -234,9 +262,19 @@ func (r *request) project(header, fallback string) string {
 	if p := sanitizeSegment(header); p != "" {
 		return p
 	}
-	if m := workdirRe.FindStringSubmatch(r.systemText()); m != nil {
-		if p := sanitizeSegment(filepath.Base(strings.TrimRight(m[1], `/\`))); p != "" {
-			return p
+	// Claude Code puts its environment section in a system message or in
+	// the first user message, not always in the system prompt.
+	texts := []string{r.systemText()}
+	for i, m := range r.messages {
+		if m.str("role") == "system" || i == 0 {
+			texts = append(texts, contentText(m["content"], 0))
+		}
+	}
+	for _, t := range texts {
+		if m := workdirRe.FindStringSubmatch(t); m != nil {
+			if p := sanitizeSegment(filepath.Base(strings.TrimRight(m[1], `/\`))); p != "" {
+				return p
+			}
 		}
 	}
 	return sanitizeSegment(fallback)

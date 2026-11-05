@@ -168,3 +168,5 @@ func runScenario(ctx context.Context, sc Scenario, md mode, tmpRoot string, r *R
 	}
 	return nil
 }
+
+func joinErr(a, b error) error { return errors.Join(a, b) }
