@@ -106,6 +106,7 @@ type captureKey struct{}
 
 type captureInfo struct {
 	session string
+	base    string // the session without a subagent suffix
 	project string
 }
 
@@ -152,6 +153,7 @@ func (p *Proxy) handleMessages(w http.ResponseWriter, r *http.Request) {
 			session: req.session(r.Header),
 			project: req.project(r.Header.Get("X-Bead-Project"), p.opt.DefaultProject),
 		}
+		info.base = baseSession(r.Header, info.session)
 		tr.fill(req, info, r.Header)
 		p.mu.Lock()
 		b, err := p.process(context.WithValue(ctx, traceKey{}, tr), req, info)
@@ -348,7 +350,7 @@ func (p *Proxy) recall(ctx context.Context, cues string, info *captureInfo, st *
 		ids = append(ids, c.Hit.ID)
 	}
 
-	rawHits, err := p.opt.Memory.SearchRaw(ctx, index.RawQuery{Text: cues, ExcludeSession: info.session, Project: info.project, Limit: p.opt.MaxExcerpts * 3})
+	rawHits, err := p.opt.Memory.SearchRaw(ctx, index.RawQuery{Text: cues, ExcludeSession: info.base, Project: info.project, Limit: p.opt.MaxExcerpts * 3})
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -357,10 +359,12 @@ func (p *Proxy) recall(ctx context.Context, cues string, info *captureInfo, st *
 		if len(excerpts) >= p.opt.MaxExcerpts {
 			break
 		}
-		if st.raws[h.ID] || recall.Coverage(h.Text, cueTerms) < p.opt.MinCoverage {
+		tid := textID(h.Text)
+		if st.raws[h.ID] || st.raws[tid] || recall.Coverage(h.Text, cueTerms) < p.opt.MinCoverage {
 			continue
 		}
-		rawIDs = append(rawIDs, h.ID)
+		st.raws[tid] = true // also stops a second copy within this block
+		rawIDs = append(rawIDs, h.ID, tid)
 		line := fmt.Sprintf("- [%s %s, session %s] %s", h.At.Format("2006-01-02"), h.Role, h.Session, oneLine(truncate(h.Text, 500)))
 		if used+len(line) > p.opt.RecallBudget {
 			break

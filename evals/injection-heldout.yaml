@@ -1,0 +1,317 @@
+project: tidewater
+facts:
+  test-cmd: "Run the test suite with `uv run pytest -m 'not slow'`. Tests marked slow hit real S3 and only run in the nightly CI job."
+  lint-cmd: "Linting and formatting use ruff only: `uv run ruff check --fix && uv run ruff format`. Black and isort are not used in this repo."
+  python-pin: "Python is pinned to 3.11 in .python-version. The Snowflake connector version we pin has no 3.12 wheels, so uv sync fails on 3.12."
+  pyarrow-pin: "pyarrow is pinned to 15.0.2 because 16.x changed timestamp unit handling and broke the parquet writer. Do not bump it without the parquet round-trip tests."
+  dagster-dev: "Start the local Dagster UI with `uv run dagster dev -p 3070`; it is served at http://localhost:3070."
+  minio-local: "Local S3 is MinIO from docker-compose on port 9100 (console on 9101) with credentials tidewater / tidewater123. Set AWS_ENDPOINT_URL=http://localhost:9100 to use it."
+  bucket-layout: "Raw vendor files land in s3://tw-raw/<source>/dt=YYYY-MM-DD/. Nothing may write to tw-raw; all outputs go to s3://tw-curated."
+  duckdb-local: "The local warehouse is a DuckDB file at data/warehouse.duckdb. Delete it to reset local state; materializing all assets rebuilds it."
+  snowflake-creds: "Snowflake auth uses key-pair only via SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER and SNOWFLAKE_PRIVATE_KEY_PATH. Password auth is disabled for the service users."
+  asset-naming: "Dagster assets are named <layer>__<source>__<entity>, for example staging__stripe__charges, and live under tidewater/assets/<layer>/<source>/."
+  partition-start: "Daily partitions start at 2023-01-01. Backfills for earlier dates fail because the vendor APIs return no data before then."
+  flaky-sensor-test: "tests/sensors/test_s3_sensor.py::test_sensor_cursor is flaky because it depends on MinIO list ordering. Rerun it once before debugging."
+  deploy: "Staging deploys automatically on merge to main. Production deploys are run by hand with `make deploy ENV=prod TAG=<git-sha>` after the staging run is green."
+  owners: "Priya Nair owns the ingestion layer (tidewater/assets/raw). Tomasz Kowal owns the dbt models and the Snowflake schemas."
+  dbt-run: "dbt models live in transform/. To run them without Dagster use `uv run dbt build --project-dir transform --target dev`."
+  stripe-rate-limit: "The Stripe extractor must stay under 25 requests per second. STRIPE_MAX_RPS defaults to 20; higher values cause 429s and a temporary account lockout."
+  utc-partitions: "All timestamps are stored in UTC, and the dt partition key is the UTC date, not the Sydney business date."
+  env-files: "Local secrets go in .env.local, which is gitignored. The committed .env holds only non-secret defaults."
+  alert-channel: "Pipeline run failures post to the #tw-pipeline-alerts Slack channel through SLACK_WEBHOOK_URL. Nothing pages unless a run fails twice."
+  pandera-contracts: "Every curated table needs a pandera schema in tidewater/schemas/. The CI step `make contracts` fails if one is missing."
+  hubspot-cursor: "The HubSpot API paging cursor expires after 5 minutes, so a paused or retried HubSpot extract restarts from page one. Do not add sleeps inside the HubSpot paging loop."
+  docker-platform: "On Apple Silicon, build the image with `docker build --platform linux/amd64` because the pinned Snowflake connector has no arm64 Linux wheel."
+  backfill-concurrency: "The run worker pod has a 4Gi memory limit. Large backfills must pass `--max-concurrent 2` or the pods get OOMKilled."
+  prod-ui: "The production Dagster UI is at https://dagster.tidewater.internal and needs the corporate VPN."
+  schemachange: "Snowflake schema changes go through schemachange scripts in migrations/ named V<n>__<description>.sql. Never alter tables by hand."
+  pre-commit: "pre-commit runs ruff, mypy --strict on tidewater/, and nbstripout, which blocks notebooks that still contain outputs."
+  vendor-fixtures: "Vendor payload fixtures live in tests/fixtures/<source>/ and are regenerated with `make refresh-fixtures SOURCE=<name>`, which needs live API keys in .env.local."
+  runbook: "The on-call rotation is the PagerDuty schedule 'Tidewater Data', and the incident runbook is docs/runbook.md."
+turns:
+  - cue: "how do i run the tests again"
+    expect: [test-cmd]
+  - cue: |
+      Running the sensor tests now.
+      [tool_use Bash] {"command": "uv run pytest tests/sensors -m 'not slow' -q"}
+      [tool_result] ..F....
+      =================================== FAILURES ===================================
+      ______________________________ test_sensor_cursor ______________________________
+          def test_sensor_cursor(minio_bucket, sensor_ctx):
+              result = list(new_files_sensor(sensor_ctx))
+      >       assert result[0].run_key == "stripe/dt=2024-03-01/part-000.json"
+      E       AssertionError: assert 'stripe/dt=2024-03-01/part-001.json' == 'stripe/dt=2024-03-01/part-000.json'
+      tests/sensors/test_s3_sensor.py:48: AssertionError
+      =========================== short test summary info ============================
+      FAILED tests/sensors/test_s3_sensor.py::test_sensor_cursor - AssertionError
+      1 failed, 6 passed in 3.12s
+    expect: [flaky-sensor-test]
+    allow: [test-cmd, minio-local]
+  - cue: "do we use black or ruff format here? want to set up format on save"
+    expect: [lint-cmd]
+    allow: [pre-commit]
+  - cue: |
+      [tool_use Bash] {"command": "uv add pyarrow@latest"}
+      [tool_result] Resolved 142 packages in 1.21s
+      Updated pyarrow v15.0.2 -> v17.0.0
+      bump pyarrow to latest pls, dependabot keeps nagging
+    expect: [pyarrow-pin]
+  - cue: "whats the port for dagster locally, forgot"
+    expect: [dagster-dev]
+  - cue: |
+      [tool_use Bash] {"command": "uv run python -m tidewater.scripts.list_raw stripe"}
+      [tool_result] Traceback (most recent call last):
+        File "/Users/sam/tidewater/tidewater/scripts/list_raw.py", line 22, in main
+          for obj in client.list_objects_v2(Bucket="tw-raw", Prefix=prefix)["Contents"]:
+        File ".venv/lib/python3.11/site-packages/botocore/client.py", line 565, in _api_call
+          return self._make_api_call(operation_name, kwargs)
+      botocore.exceptions.EndpointConnectionError: Could not connect to the endpoint URL: "http://localhost:9000/tw-raw?list-type=2&prefix=stripe%2F"
+    expect: [minio-local]
+  - cue: |
+      I'll write the deduplicated charges back next to the source files.
+      [tool_use Edit] {"file_path": "tidewater/assets/staging/stripe/charges.py", "old_string": "    return df", "new_string": "    df.to_parquet(f\"s3://tw-raw/stripe/dt={partition}/charges_dedup.parquet\")\n    return df"}
+      [tool_result] The file tidewater/assets/staging/stripe/charges.py has been updated successfully.
+    expect: [bucket-layout]
+  - cue: "my local state is all messed up, assets show stale rows. how do i nuke everything and start fresh"
+    expect: [duckdb-local]
+  - cue: |
+      [tool_use Bash] {"command": "uv run python -m tidewater.scripts.load_snowflake --table FACT_ORDERS --dt 2024-05-02"}
+      [tool_result] snowflake.connector.errors.DatabaseError: 250001 (08001): Failed to connect to DB: xy12345.ap-southeast-2.snowflakecomputing.com:443. Password is empty
+    expect: [snowflake-creds]
+    allow: [env-files]
+  - cue: "add a new asset for the shopify orders staging table"
+    expect: [asset-naming]
+    allow: [pandera-contracts, bucket-layout]
+  - cue: |
+      [tool_use Bash] {"command": "uv run dagster asset backfill -m tidewater --select raw__stripe__charges --from 2022-06-01 --to 2022-06-30"}
+      [tool_result] Launching backfill tw-bf-8812 for 30 partitions...
+      dagster._core.errors.DagsterInvalidInvocationError: Partition key '2022-06-01' is not a valid partition for partitions definition DailyPartitionsDefinition(start='2023-01-01', timezone='UTC')
+    expect: [partition-start]
+  - cue: "ok PR's merged. how do we ship this to prod"
+    expect: [deploy]
+    allow: [prod-ui, runbook]
+  - cue: "who should review changes to the raw extractors?"
+    expect: [owners]
+  - cue: "can i just run the dbt models on their own without spinning up the whole dagster thing"
+    expect: [dbt-run]
+  - cue: |
+      [tool_use Bash] {"command": "STRIPE_MAX_RPS=50 uv run dagster asset materialize -m tidewater --select raw__stripe__charges --partition 2024-06-10"}
+      [tool_result] 2024-06-11 02:14:07 - tidewater.extract.stripe - WARNING - HTTP 429 Too Many Requests, retry 1/5
+      2024-06-11 02:14:08 - tidewater.extract.stripe - WARNING - HTTP 429 Too Many Requests, retry 2/5
+      2024-06-11 02:14:12 - tidewater.extract.stripe - ERROR - stripe.error.RateLimitError: Request rate limit exceeded. Your account has been temporarily restricted.
+      Run failed: raw__stripe__charges
+    expect: [stripe-rate-limit]
+  - cue: "finance says yesterdays numbers are missing every order before ~10am sydney time. data's there if i query the next day's partition tho"
+    expect: [utc-partitions]
+  - cue: "where do i put my snowflake key path locally? can i just add it to .env"
+    expect: [env-files, snowflake-creds]
+  - cue: |
+      [tool_use Bash] {"command": "make contracts"}
+      [tool_result] uv run python -m tidewater.ci.check_contracts
+      Checking curated assets against tidewater/schemas/ ...
+        ok   curated__stripe__charges
+        ok   curated__hubspot__deals
+        MISS curated__shopify__orders  (no schema module tidewater/schemas/shopify_orders.py)
+      1 curated asset(s) without a contract
+      make: *** [contracts] Error 1
+    expect: [pandera-contracts]
+  - cue: |
+      The HubSpot run failed halfway, so I added a retry with a 10 minute backoff and reran it.
+      [tool_use Bash] {"command": "uv run dagster asset materialize -m tidewater --select raw__hubspot__deals --partition 2024-07-01"}
+      [tool_result] 2024-07-02 01:03:44 - tidewater.extract.hubspot - INFO - page 41 fetched (100 records)
+      2024-07-02 01:03:44 - tidewater.extract.hubspot - WARNING - transient 502, backing off 600s
+      2024-07-02 01:13:45 - tidewater.extract.hubspot - ERROR - HTTP 400: {"status":"error","message":"The paging cursor provided has expired","category":"VALIDATION_ERROR"}
+    expect: [hubspot-cursor]
+  - cue: |
+      [tool_use Bash] {"command": "docker build -t tidewater:dev ."}
+      [tool_result] #12 [builder 5/7] RUN uv sync --frozen --no-dev
+      #12 2.811 error: Distribution `snowflake-connector-python==3.6.0 @ registry+https://pypi.org/simple` can't be installed because it doesn't have a source distribution or wheel for the current platform
+      #12 2.811 hint: You're on Linux (`manylinux_2_36_aarch64`), but `snowflake-connector-python` (v3.6.0) only has wheels for: `manylinux_2_17_x86_64`, `macosx_11_0_arm64`, `win_amd64`
+      ERROR: failed to solve: process "/bin/sh -c uv sync --frozen --no-dev" did not complete successfully: exit code: 2
+    expect: [docker-platform]
+  - cue: |
+      [tool_use Bash] {"command": "kubectl -n tidewater describe pod dagster-run-7f3c1a-xk2pq | tail -n 12"}
+      [tool_result]     State:          Terminated
+            Reason:       OOMKilled
+            Exit Code:    137
+          Limits:
+            memory:  4Gi
+          Requests:
+            memory:  2Gi
+      Events:
+        Type     Reason     Age   From     Message
+        Normal   Pulled     14m   kubelet  Container image "ecr/tidewater:9c1e2d4" already present
+        Warning  OOMKilling 2m    kubelet  Memory cgroup out of memory: Killed process 31 (dagster)
+      this is the backfill for all of Q1, 6 of the run pods died like this
+    expect: [backfill-concurrency]
+  - cue: "link to prod dagster?"
+    expect: [prod-ui]
+  - cue: "need to add a discount_code column to FACT_ORDERS in snowflake. can i just run an ALTER TABLE from the worksheet"
+    expect: [schemachange]
+    allow: [owners]
+  - cue: |
+      [tool_use Bash] {"command": "git commit -m 'explore shopify payload'"}
+      [tool_result] ruff.....................................................................Passed
+      ruff-format..............................................................Passed
+      mypy.....................................................................Passed
+      nbstripout...............................................................Failed
+      - hook id: nbstripout
+      - files were modified by this hook
+      notebooks/shopify_explore.ipynb
+    expect: [pre-commit]
+  - cue: "the stripe fixtures are stale, the new api version added fields. regenerate them"
+    expect: [vendor-fixtures]
+    allow: [env-files]
+  - cue: |
+      [tool_use Bash] {"command": "uv sync"}
+      [tool_result] Using CPython 3.12.4 interpreter at: /opt/homebrew/bin/python3.12
+      Creating virtual environment at: .venv
+        x Failed to build `snowflake-connector-python==3.6.0`
+        |-> The build backend returned an error
+        |-> Call to `setuptools.build_meta.build_wheel` failed (exit status: 1)
+            error: command '/usr/bin/clang' failed with exit code 1
+            src/snowflake/connector/nanoarrow_cpp/ArrowIterator/CArrowIterator.cpp:12: fatal error: 'arrow/python/pyarrow.h' file not found
+    expect: [python-pin]
+  - cue: "thanks!"
+  - cue: "explain what frozen=True does on a dataclass"
+  - cue: |
+      [tool_use Read] {"file_path": "tidewater/utils/money.py"}
+      [tool_result] 1  from decimal import Decimal
+      2
+      3  def parse_amount(raw, currency):
+      4      if raw is None:
+      5          return None
+      6      minor = int(raw)
+      7      exponent = 3 if currency in ("BHD", "KWD") else 2
+      8      return Decimal(minor) / (10 ** exponent)
+      add type hints to this
+  - cue: |
+      [tool_use Grep] {"pattern": "def normalize_email", "path": "tidewater"}
+      [tool_result] tidewater/utils/strings.py:14:def normalize_email(value: str | None) -> str | None:
+      where's this actually called from
+  - cue: |
+      [tool_use Bash] {"command": "git status --short"}
+      [tool_result]  M tidewater/utils/money.py
+       M tests/utils/test_money.py
+      commit it with "handle null amounts"
+  - cue: "write a regex that matches ISO 8601 dates like 2024-03-01"
+  - cue: |
+      [tool_use Edit] {"file_path": "tidewater/utils/strings.py", "old_string": "    return value.lower()", "new_string": "    return value.strip().lower()"}
+      [tool_result] The file tidewater/utils/strings.py has been updated successfully.
+      looks good
+  - cue: |
+      [tool_use Bash] {"command": "uv run pytest tests/transforms/test_orders.py -q"}
+      [tool_result] F
+      =================================== FAILURES ===================================
+      ____________________________ test_flatten_line_items ___________________________
+      tests/transforms/test_orders.py:31: in test_flatten_line_items
+          rows = flatten_line_items(SAMPLE_ORDER)
+      tidewater/transforms/orders.py:58: in flatten_line_items
+          "currency": item["price_set"]["shop_money"]["currency"],
+      E   KeyError: 'currency'
+      1 failed in 0.41s
+  - cue: "lol ok"
+  - cue: |
+      can u make this more readable
+      result = [x["id"] for x in rows if x.get("status") not in ("void","draft") and x["amount"] > 0]
+  - cue: |
+      [tool_use Bash] {"command": "ls tidewater/transforms"}
+      [tool_result] __init__.py
+      customers.py
+      orders.py
+      refunds.py
+      ok what next
+  - cue: "whats the difference between pandas merge and join, i always mix them up"
+  - cue: |
+      [tool_use Read] {"file_path": "docs/architecture.md"}
+      [tool_result] # Architecture
+      Tidewater pulls data from payment, CRM and storefront vendors, stages it,
+      applies business rules, and publishes curated tables for the analytics team.
+      Each layer is a set of Dagster assets. Downstream consumers read only curated tables.
+      summarise this in 2 lines for the onboarding doc
+  - cue: |
+      [tool_use Bash] {"command": "grep -rn TODO tidewater/transforms"}
+      [tool_result] tidewater/transforms/orders.py:72:    # TODO: handle gift cards as a separate tender type
+      tidewater/transforms/refunds.py:19:    # TODO: drop this shim once all callers pass a Decimal
+      pick one and fix it
+  - cue: "rename df2 to orders_df everywhere in this file"
+  - cue: |
+      [tool_use Bash] {"command": "git log --oneline -4"}
+      [tool_result] a91c2e0 fix typo
+      77d0b13 fix typo again
+      3e5f9a2 add refunds transform
+      c01d8e4 handle null amounts
+      squash the top 3 into one
+  - cue: "why is my fstring printing the {braces} literally"
+  - cue: |
+      [tool_use Bash] {"command": "uv run pytest tests/transforms -q"}
+      [tool_result] ..........................
+      26 passed in 1.88s
+      nice. now add a line to CHANGELOG for the refunds transform
+  - cue: |
+      [tool_use Edit] {"file_path": "tidewater/transforms/refunds.py", "old_string": "def net_refund(rows):", "new_string": "def net_refund(rows):\n    \"\"\"Sum refunds per order, ignoring voided rows.\"\"\""}
+      [tool_result] The file tidewater/transforms/refunds.py has been updated successfully.
+  - cue: |
+      [tool_use Bash] {"command": "uv run mypy tidewater/utils/dates.py"}
+      [tool_result] tidewater/utils/dates.py:27: error: Incompatible return value type (got "str | None", expected "str")  [return-value]
+      Found 1 error in 1 file (checked 1 source file)
+  - cue: "what does yield from actually do vs a for loop with yield"
+  - cue: |
+      [tool_use Bash] {"command": "wc -l tidewater/transforms/*.py"}
+      [tool_result]       0 tidewater/transforms/__init__.py
+           88 tidewater/transforms/customers.py
+          214 tidewater/transforms/orders.py
+           61 tidewater/transforms/refunds.py
+          363 total
+      orders.py is getting big, split the line item stuff out
+  - cue: |
+      [tool_use Read] {"file_path": "tests/utils/test_money.py"}
+      [tool_result] 1  from decimal import Decimal
+      2  from tidewater.utils.money import parse_amount
+      3
+      4  def test_parse_amount_usd():
+      5      assert parse_amount("1999", "USD") == Decimal("19.99")
+      add a test for negative amounts (refunds come thru negative)
+  - cue: "ok go with option 2"
+  - cue: "rename the `port` arg in tidewater/utils/geo.py to `harbour_port`, it's a shipping port code not a network port and it confuses ppl"
+  - cue: "the payments vendor keeps telling us to slow down and last night they locked us out for an hour. what's safe?"
+    expect: [stripe-rate-limit]
+  - cue: "the linter is yelling about unused imports in like 40 files, how do i autofix all of them"
+    expect: [lint-cmd]
+  - cue: |
+      [tool_use Read] {"file_path": "tidewater/assets/staging/stripe/charges.py"}
+      [tool_result] 1  """Staging asset for Stripe charges.
+      2
+      3  Dedupes charges by id and keeps the lastest version.
+      4  """
+      5  from dagster import asset
+      fix the typo in the docstring
+  - cue: "quick q, the date folder in the lake, is that our local date or the global one?"
+    expect: [utc-partitions]
+    allow: [bucket-layout]
+  - cue: "sf creds arent working on my new laptop, it just says auth failed"
+    expect: [snowflake-creds]
+    allow: [env-files]
+  - cue: |
+      [tool_use Bash] {"command": "uv run pytest tests/sensors/test_s3_sensor.py -q"}
+      [tool_result] .F..
+      =================================== FAILURES ===================================
+      _________________________ test_sensor_skips_empty_prefix _______________________
+      tests/sensors/test_s3_sensor.py:71: in test_sensor_skips_empty_prefix
+          assert result == []
+      E   AssertionError: assert [RunRequest(run_key='hubspot/dt=2024-03-01/', ...)] == []
+      1 failed, 3 passed in 2.04s
+      I changed the prefix filter in the sensor this morning
+    allow: [flaky-sensor-test]
+  - cue: "did we get pinged anywhere about last nights run blowing up? i was offline"
+    expect: [alert-channel]
+  - cue: |
+      [tool_use Read] {"file_path": "tidewater/io/http.py"}
+      [tool_result] 1  import httpx
+      2
+      3  async def fetch_all(urls: list[str]) -> list[httpx.Response]:
+      4      async with httpx.AsyncClient() as client:
+      5          return [await client.get(u) for u in urls]
+      make this concurrent but cap it at like 5 requests in flight
+  - cue: "the worker keeps dying when i replay three months of history, smaller ranges are fine"
+    expect: [backfill-concurrency]

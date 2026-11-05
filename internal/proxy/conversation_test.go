@@ -123,3 +123,60 @@ func TestStateSurvivesRestartAndForget(t *testing.T) {
 		}
 	}
 }
+
+// A subagent's turns are part of the same Claude Code session. They must
+// not come back to the parent as "earlier session" excerpts, and the
+// parent's turns must not reach the subagent that way either.
+func TestSubagentTurnsAreNotExcerpts(t *testing.T) {
+	f := setup(t)
+	parent := map[string]string{"X-Claude-Code-Session-Id": "s-3"}
+	child := map[string]string{"X-Claude-Code-Session-Id": "s-3", "X-Claude-Code-Agent-Id": "a-1"}
+	f.post(t, "/v1/messages", cc(asst("ok"), userText("write the zebrafish quokka eval file")), child)
+	f.post(t, "/v1/messages", cc(asst("ok"), userText("check the zebrafish quokka eval file")), parent)
+	for _, m := range upstreamMessages(t, f, 1) {
+		if strings.Contains(string(m), "Excerpts from earlier sessions") {
+			t.Fatalf("a subagent turn came back as an excerpt: %s", m)
+		}
+	}
+	f.post(t, "/v1/messages", cc(asst("ok"), userText("now the zebrafish quokka eval file again")), map[string]string{"X-Claude-Code-Session-Id": "other"})
+	found := false
+	for _, m := range upstreamMessages(t, f, 2) {
+		found = found || strings.Contains(string(m), "Excerpts from earlier sessions")
+	}
+	if !found {
+		t.Fatal("a different session must still get the excerpt")
+	}
+}
+
+func TestDuplicateExcerptTextInjectedOnce(t *testing.T) {
+	f := setup(t)
+	// Two earlier sessions captured the same text.
+	for _, s := range []string{"old-a", "old-b"} {
+		f.post(t, "/v1/messages", cc(asst("ok"), userText("the narwhal pipeline needs the okapi flag")), map[string]string{"X-Claude-Code-Session-Id": s})
+	}
+	hdr := map[string]string{"X-Claude-Code-Session-Id": "new"}
+	f.post(t, "/v1/messages", cc(asst("ok"), userText("how do I run the narwhal pipeline with okapi")), hdr)
+	n := 0
+	for _, m := range upstreamMessages(t, f, 2) {
+		n += strings.Count(string(m), "the narwhal pipeline needs the okapi flag")
+	}
+	if n != 1 {
+		t.Fatalf("the excerpt text appears %d times, want 1", n)
+	}
+	f.post(t, "/v1/messages", cc(asst("ok"), userText("how do I run the narwhal pipeline with okapi"), asst("x"), userText("narwhal okapi again")), hdr)
+	n = 0
+	for _, m := range upstreamMessages(t, f, 3) {
+		n += strings.Count(string(m), "the narwhal pipeline needs the okapi flag")
+	}
+	if n != 1 {
+		t.Fatalf("after a second turn the excerpt text appears %d times, want 1", n)
+	}
+}
+
+func TestThreadIgnoresReminders(t *testing.T) {
+	a, _ := parseRequest([]byte(`{"messages":[{"role":"user","content":"<system-reminder>one</system-reminder>do the task"}]}`))
+	b, _ := parseRequest([]byte(`{"messages":[{"role":"user","content":"<system-reminder>two</system-reminder>do the task"}]}`))
+	if stateKey("s", a) != stateKey("s", b) {
+		t.Fatal("a changed reminder started a new thread")
+	}
+}

@@ -41,11 +41,20 @@ type Options struct {
 	// Relative drops a candidate that scores below this share of the best
 	// candidate, so a strong match does not bring a weak tail. 0 is off.
 	Relative float64
+	// Sources weights cue terms by where they came from: the person's
+	// message 1, the assistant's text and tool input 0.6, tool output 0.3.
+	Sources bool
+	// Peak scores a fact by its strongest shared term plus a quarter of
+	// the rest, so many weak matches cannot add up to a strong one.
+	Peak bool
 }
 
-// Defaults are the values the eval in evals/injection.yaml supports.
+// Defaults favour precision. On the held-out suite no scorer reached a
+// usable balance (DESIGN.md, "Evaluation"), and a false injection costs
+// tokens and attention on every turn, while a miss falls back to the
+// pinned block and the recall tool. So only a strong match is injected.
 func Defaults() Options {
-	return Options{Scorer: ScorerEvidence, MinScore: 1.0, MaxFacts: 6, Relative: 0.5}
+	return Options{Scorer: ScorerEvidence, MinScore: 1.2, MaxFacts: 2, Relative: 0.5, Sources: true, Peak: true}
 }
 
 // Candidate is a fact with its relevance score.
@@ -63,6 +72,16 @@ func Facts(ctx context.Context, m *memory.Memory, cues string, scopes []string, 
 	hits, err := m.Search(ctx, index.Query{Text: CleanCues(cues), Scopes: scopes, Limit: opt.MaxFacts * 3})
 	if err != nil || len(hits) == 0 {
 		return nil, nil, err
+	}
+	cueW := CueWeights(cues, opt.Sources)
+	// The project name appears in most cues and facts of the project, so
+	// it is no evidence.
+	for _, sc := range scopes {
+		if name, ok := strings.CutPrefix(sc, "project/"); ok {
+			for t := range TermSet(strings.ReplaceAll(name, "-", " ")) {
+				delete(cueW, t)
+			}
+		}
 	}
 	cues = CleanCues(cues)
 	cueTerms := TermSet(cues)
@@ -83,7 +102,7 @@ func Facts(ctx context.Context, m *memory.Memory, cues string, scopes []string, 
 		case ScorerIDF:
 			s = idfCoverage(h.Body, cueTerms, df, n)
 		case ScorerEvidence:
-			s = evidence(scoredText(h), cueTerms, df, n)
+			s = evidence(scoredText(h), cueW, df, n, opt.Peak)
 		default:
 			s = Coverage(h.Body, cueTerms)
 		}
@@ -123,20 +142,66 @@ func init() {
 	}
 }
 
-func evidence(text string, cues map[string]bool, df map[string]int, n int) float64 {
+func evidence(text string, cues map[string]float64, df map[string]int, n int, peak bool) float64 {
 	top := math.Log(1 + float64(n+1)/2)
-	var sum float64
+	var sum, best float64
 	for t := range TermSet(text) {
-		if !cues[t] {
+		cw, ok := cues[t]
+		if !ok {
 			continue
 		}
-		w := math.Log(1+float64(n+1)/float64(df[t]+1)) / top
+		w := math.Log(1+float64(n+1)/float64(df[t]+1)) / top * cw
 		if generic[t] {
 			w *= 0.2
 		}
 		sum += w
+		best = max(best, w)
+	}
+	if peak {
+		return best + 0.25*(sum-best)
 	}
 	return sum
+}
+
+var partRe = regexp.MustCompile(`\[(?:tool_(use|result)|(user))(?: [^\]]*)?\]`)
+
+// CueWeights maps each cue term to the weight of the strongest part it
+// appears in. The proxy writes tool calls as "[tool_use Name] {...}" and
+// tool output as "[tool_result] ...", and the person's text as
+// "[user] ...". Text before the first label is the assistant's text.
+func CueWeights(cues string, sources bool) map[string]float64 {
+	out := map[string]float64{}
+	add := func(text string, w float64) {
+		if !sources {
+			w = 1
+		}
+		for t := range TermSet(CleanCues(text)) {
+			out[t] = max(out[t], w)
+		}
+	}
+	locs := partRe.FindAllStringSubmatchIndex(cues, -1)
+	if len(locs) == 0 {
+		add(cues, 1)
+		return out
+	}
+	add(cues[:locs[0][0]], 0.6)
+	for i, l := range locs {
+		end := len(cues)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		if l[4] >= 0 { // [user]
+			add(cues[l[1]:end], 1)
+			continue
+		}
+		if cues[l[2]:l[3]] == "use" {
+			add(cues[l[1]:end], 0.6)
+			continue
+		}
+		body := cues[l[1]:end]
+		add(body, 0.3)
+	}
+	return out
 }
 
 // Stem removes common suffixes so that "listens", "loaded" and "loading"
@@ -155,7 +220,7 @@ func Stem(t string) string {
 }
 
 var (
-	toolLabelRe = regexp.MustCompile(`\[tool_(?:use|result)(?: [^\]]*)?\]`)
+	toolLabelRe = regexp.MustCompile(`\[(?:tool_(?:use|result)|user)(?: [^\]]*)?\]`)
 	jsonKeyRe   = regexp.MustCompile(`"[A-Za-z_][A-Za-z0-9_]*"\s*:`)
 )
 

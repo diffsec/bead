@@ -202,8 +202,20 @@ func (r *request) cues() string {
 			}
 		}
 	}
-	parts = append(parts, contentText(r.messages[i]["content"], 1500))
-	return truncate(reminderRe.ReplaceAllString(strings.Join(parts, "\n"), ""), 4000)
+	// Tool results first, then the person's own text with a [user] label,
+	// so recall can weight what the person wrote above tool output.
+	var typed []string
+	if bs, err := blocks(r.messages[i]["content"]); err == nil {
+		for _, b := range bs {
+			if b.str("type") == "text" {
+				typed = append(typed, reminderRe.ReplaceAllString(b.str("text"), ""))
+			} else if t := blockText(b, 1500); t != "" {
+				parts = append(parts, reminderRe.ReplaceAllString(t, ""))
+			}
+		}
+	}
+	parts = append(parts, "[user] "+truncate(strings.TrimSpace(strings.Join(typed, "\n")), 1500))
+	return strings.Join(parts, "\n")
 }
 
 // prevAssistant returns the index of the assistant message before message
@@ -289,6 +301,16 @@ func (r *request) project(header, fallback string) string {
 //     agent gets its own raw log and pinned-block state.
 //  3. A hash of the system prompt and the first message. Harnesses resend
 //     the whole conversation each turn, so that prefix is stable.
+//
+// baseSession is the session without a subagent suffix. Raw search
+// leaves out the base session and all of its subagents.
+func baseSession(hdr http.Header, session string) string {
+	if s := cleanSession(hdr.Get("X-Claude-Code-Session-Id")); s != "" && hdr.Get("X-Bead-Session") == "" {
+		return s
+	}
+	return session
+}
+
 func (r *request) session(hdr http.Header) string {
 	if s := cleanSession(hdr.Get("X-Bead-Session")); s != "" {
 		return s

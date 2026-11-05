@@ -38,7 +38,9 @@ func TestInjectionSweep(t *testing.T) {
 	for _, f := range def.Failures {
 		t.Logf("default: %s", f)
 	}
-	if def.Recall() < 0.9 || def.FalseTurnRate() > 0.1 {
+	// Floors for the precision-first default. They guard against a
+	// regression; they are not a quality claim.
+	if def.Recall() < 0.35 || def.FalseTurnRate() > 0.05 {
 		t.Fatalf("default options: recall %.2f, false-turn rate %.2f", def.Recall(), def.FalseTurnRate())
 	}
 }

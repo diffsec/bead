@@ -101,8 +101,12 @@ func (ix *Index) ReplaceRaw(ctx context.Context, chunks []RawChunk) (err error) 
 
 // RawQuery is a search over captured turns.
 type RawQuery struct {
-	Text           string
-	ExcludeSession string // the live session is already in the model context
+	Text string
+	// ExcludeSession leaves out this session and every session whose ID
+	// starts with it and a hyphen. A subagent's session is the parent ID
+	// plus a suffix, and its turns are already in the parent's context or
+	// were written by the parent.
+	ExcludeSession string
 	Project        string // boost turns from this project
 	Limit          int
 }
@@ -120,9 +124,9 @@ func (ix *Index) SearchRaw(ctx context.Context, q RawQuery) (_ []RawHit, err err
 	rows, err := ix.db.QueryContext(ctx, `
 		SELECT r.id, r.session, r.project, r.role, r.at, r.text, bm25(raw_fts) AS rank
 		FROM raw_fts JOIN raw r ON r.id = raw_fts.id
-		WHERE raw_fts MATCH ? AND r.session <> ?
+		WHERE raw_fts MATCH ?1 AND r.session <> ?2 AND substr(r.session, 1, length(?2) + 1) <> ?2 || '-'
 		ORDER BY rank
-		LIMIT ?`, match, q.ExcludeSession, limit*4)
+		LIMIT ?3`, match, q.ExcludeSession, limit*4)
 	if err != nil {
 		return nil, err
 	}

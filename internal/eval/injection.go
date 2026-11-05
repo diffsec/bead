@@ -148,3 +148,40 @@ func set(xs []string) map[string]bool {
 	}
 	return m
 }
+
+// LexicalScores returns, for each turn, the lexical score of every fact
+// that BM25 found, keyed by fact name. Facts BM25 did not find are absent.
+func LexicalScores(ctx context.Context, s InjectionSuite, tmpRoot string, opt recall.Options) (_ []map[string]float64, err error) {
+	home, err := os.MkdirTemp(tmpRoot, "bead-lex-*")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = joinErr(err, os.RemoveAll(home)) }()
+	m, err := memory.Open(ctx, home)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = joinErr(err, m.Close()) }()
+	keyOf := map[string]string{}
+	for n, body := range s.Facts {
+		key := "project/" + s.Project + "/" + n
+		keyOf[key] = n
+		if _, err := m.Write(ctx, store.WriteInput{Key: key, Type: fact.TypeProject, Body: body, Trust: fact.TrustUserStated}); err != nil {
+			return nil, err
+		}
+	}
+	opt.MinScore, opt.Relative, opt.MaxFacts = 0, 0, 1000
+	scopes := []string{"user", "global", "project/" + s.Project}
+	out := make([]map[string]float64, len(s.Turns))
+	for i, t := range s.Turns {
+		picked, rejected, err := recall.Facts(ctx, m, t.Cue, scopes, nil, opt)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = map[string]float64{}
+		for _, c := range append(picked, rejected...) {
+			out[i][keyOf[c.Hit.Key]] = c.Score
+		}
+	}
+	return out, nil
+}

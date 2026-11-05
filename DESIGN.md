@@ -135,7 +135,9 @@ Start the proxy with `bead proxy`. Then start the harness with `ANTHROPIC_BASE_U
 - `bead proxy --trace FILE`, or `BEAD_TRACE`, appends one JSON line per request: the message roles, the cues, the injected IDs and the rejected candidates with their scores.
 - Claude Code ends each request with `role: "system"` messages after the newest user message. The proxy skips them to find the newest user turn. It finds the working directory in the system prompt, in a system message, or in the first user message.
 - Cues are the newest user message, plus the text and tool calls of the assistant message before it. Tool results are cut to 1,500 characters. `<system-reminder>` blocks, tool labels and JSON field names such as `"command"` are removed, because they repeat in every turn.
-- Fact selection is in `internal/recall`. BM25 finds candidates. The evidence score then adds up the IDF weight of each fact term (body and the last key segment) that the cues contain, scaled so that a term only one fact has weighs 1. A short list of generic development words weighs 0.2. A fact needs a score of 1.0 or more, and at least half the score of the best candidate. Up to 6 facts are injected.
+- Fact selection is in `internal/recall`. BM25 finds candidates. The evidence score weights each shared term by its IDF among the stored facts (body and last key segment), scaled so that a term only one fact has weighs 1. A short list of generic development words weighs 0.2. "Evaluation" gives the default gate and the reason for it.
+- The proxy labels the person's own text `[user]` in the cues, so recall can weight it above tool output.
+- Raw excerpts leave out the current session and its subagents (`<session>-<agent hash>`), and the same text is injected once per conversation.
 - Raw excerpts still use the term-coverage check at 0.25, and up to 2 excerpts from other sessions are injected.
 - Capture writes the user turn before forwarding and the assistant turn when the response body ends. It skips thinking blocks. The client gets the response bytes unchanged, including server-sent events.
 - `POST /v1/messages` is the only path that the proxy changes. Other paths, such as `/v1/messages/count_tokens`, pass through unchanged.
@@ -327,15 +329,26 @@ The set starts with about 50 scripted sessions, each with a known fact change an
 
 The suite is small and hand-written, so the numbers show that the rule works. They do not measure retrieval quality.
 
-`evals/injection.yaml` measures cue-triggered injection: 18 facts and 39 turns. The turns include direct questions, tool calls with their output, and 19 turns that need no memory. `TestInjectionSweep` runs every scorer and threshold and fails if the default drops below recall 0.9 or rises above a false-turn rate of 0.1.
+Two suites measure cue-triggered injection:
 
-| Scorer | Threshold | Recall | Precision | Turns with a false injection |
-| --- | --- | --- | --- | --- |
-| coverage (old default) | 0.25 | 0.55 | 0.69 | 13% |
-| evidence (default) | 1.0 | 1.00 | 0.87 | 8% |
-| evidence | 1.2 | 0.70 | 0.93 | 3% |
+- `evals/injection.yaml` has 18 facts and 39 turns. I wrote it and tuned the scorer against it.
+- `evals/injection-heldout.yaml` has 28 facts and 60 turns for a different project. An agent wrote it without access to the scorer code. Half of its turns are tool calls with realistic output. The odd turns are used for development. The even turns are a test set, scored once per candidate.
 
-I wrote this suite and tuned the scorer against it, so these numbers are optimistic. The generic word list and the cue cleaning came from failures in this suite. A held-out suite built from real traces is the next eval to write.
+The held-out test turns (30 turns) give these results:
+
+| Gate | Recall | Precision | Turns with a false injection |
+| --- | --- | --- | --- |
+| Term coverage 0.25 (first version) | 0.53 | 0.21 | 40% |
+| Evidence 1.0 (tuned on the first suite) | 0.88 | 0.25 | 63% |
+| Embedding, `nomic-embed-text`, cos 0.60 | 0.59 | 0.43 | 43% |
+| Embedding and evidence together | 0.71 | 0.41 | 40% |
+| Evidence 1.2, source-weighted, peak (default) | 0.24 | 0.44 | 13% |
+
+No gate reaches a usable balance on realistic turns. Tool output shares many project words with the facts, so similarity alone cannot tell whether a fact helps the turn. The evidence score on the first suite (recall 1.00, precision 0.87) came from overfitting.
+
+The default is therefore precision-first. It injects at most 2 facts, and only on a strong match. Cue terms weigh 1 from the person's text, 0.6 from the assistant's text and tool input, and 0.3 from tool output. The score is the strongest shared term plus a quarter of the rest, and the project name does not count. A miss falls back to the pinned block and the `recall` tool. `TestInjectionSweep` guards the default against regression. The embedding experiment is `TestEmbeddingGate`, and it runs only with `BEAD_EMBED_EXPERIMENT=1`.
+
+The next steps for injection are a rerank by a small model on the few candidates that pass the gate, and labels from real traces.
 
 ## Build order
 
@@ -368,7 +381,7 @@ File locking uses `flock` and is implemented for unix only.
 - `forget KEY` finds raw turns only by citation or by exact value text. A paraphrase stays until `forget --match` removes it.
 - Deleted files are unlinked, not overwritten. On APFS and on SSDs, overwriting does not erase the old blocks either. Full-disk encryption is the control for data at rest.
 - The curation session sends fact values and the matching turn text to the model provider. Sealed values are not sent.
-- The injection eval is hand-written and was used for tuning. It needs a held-out set from real traces.
+- Cue-triggered fact injection has low recall at the default. See "Evaluation".
 - IDF is computed over the stored facts only. With few facts it is noisy. Raw history as a background corpus would make it steadier.
 - The proxy stores state files for every conversation and never deletes them.
 - The proxy does not read the `cache_control` breakpoints. It relies on two facts: it appends to the end of the system prompt, and it changes only the newest user message.

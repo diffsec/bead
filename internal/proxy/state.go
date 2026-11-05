@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // convState is what the proxy remembers about one conversation. It is
@@ -45,7 +46,9 @@ type event struct {
 func stateKey(session string, req *request) string {
 	first := ""
 	if len(req.messages) > 0 {
-		first = contentText(req.messages[0]["content"], 0)
+		// Claude Code adds reminders to the first message that change
+		// between requests, so they are not part of the thread.
+		first = reminderRe.ReplaceAllString(contentText(req.messages[0]["content"], 0), "")
 	}
 	sum := sha256.Sum256([]byte(first))
 	return session + "-" + hex.EncodeToString(sum[:])[:8]
@@ -119,4 +122,11 @@ func (st *convState) append(e event) error {
 func messageKey(req *request, i int) string {
 	sum := sha256.Sum256([]byte(req.messages[i].str("role") + "\x00" + contentText(req.messages[i]["content"], 0)))
 	return strconv.Itoa(i) + ":" + hex.EncodeToString(sum[:])[:12]
+}
+
+// textID identifies an excerpt by its text, so two captures of the same
+// text count as one excerpt.
+func textID(text string) string {
+	sum := sha256.Sum256([]byte(strings.Join(strings.Fields(strings.ToLower(text)), " ")))
+	return "text:" + hex.EncodeToString(sum[:])[:16]
 }
