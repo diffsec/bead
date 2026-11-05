@@ -38,7 +38,7 @@ func cmdDreamRun(ctx context.Context, args []string, out *printer) (err error) {
 		return err
 	}
 	defer func() { err = errors.Join(err, m.Close()) }()
-	client, err := llm.New(ctx, m.Config.Dream)
+	client, err := llm.New(ctx, m.Config.Dream.LLM)
 	if err != nil {
 		return err
 	}

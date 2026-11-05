@@ -348,7 +348,20 @@ No gate reaches a usable balance on realistic turns. Tool output shares many pro
 
 The default is therefore precision-first. It injects at most 2 facts, and only on a strong match. Cue terms weigh 1 from the person's text, 0.6 from the assistant's text and tool input, and 0.3 from tool output. The score is the strongest shared term plus a quarter of the rest, and the project name does not count. A miss falls back to the pinned block and the `recall` tool. `TestInjectionSweep` guards the default against regression. The embedding experiment is `TestEmbeddingGate`, and it runs only with `BEAD_EMBED_EXPERIMENT=1`.
 
-The next steps for injection are a rerank by a small model on the few candidates that pass the gate, and labels from real traces.
+### Rerank
+
+With `rerank.enabled: true`, every candidate with an evidence score of 0.5 or more, up to 5, goes to a chat model. The model returns the candidates that help the next step. The prompt says that most turns need no fact. Tool output is cut to 600 characters per block, and the turn to 4,000. If the call fails or passes `rerank.timeout_ms` (default 4000), the strict default gate decides. The rerank uses the dream model unless the `rerank` section names its own.
+
+Gate 0.5 was chosen on the dev turns. On the held-out test turns, with `deepseek/deepseek-v4.1-flash-1017` through OrcaRouter, it gave these results:
+
+| Gate | Recall | Precision | Turns with a false injection | Latency per call |
+| --- | --- | --- | --- | --- |
+| Strict default, no rerank | 0.24 | 0.44 | 13% | 0 |
+| Evidence 0.5, then rerank | 0.88 | 0.88 | 7% | p50 2.5 s, p90 3.4 s |
+
+The rerank blocks the request, so it adds its latency to each turn that has a candidate: 28 of 30 test turns. The proxy locks per conversation, so parallel subagents do not wait for each other. `TestRerank` runs the measurement with `BEAD_RERANK_EXPERIMENT=1`, and the trace records `rerank_ms` for each request.
+
+The next step for injection is labels from real traces.
 
 ## Build order
 
@@ -381,7 +394,7 @@ File locking uses `flock` and is implemented for unix only.
 - `forget KEY` finds raw turns only by citation or by exact value text. A paraphrase stays until `forget --match` removes it.
 - Deleted files are unlinked, not overwritten. On APFS and on SSDs, overwriting does not erase the old blocks either. Full-disk encryption is the control for data at rest.
 - The curation session sends fact values and the matching turn text to the model provider. Sealed values are not sent.
-- Cue-triggered fact injection has low recall at the default. See "Evaluation".
+- Without the rerank, cue-triggered injection has low recall. With it, a turn with candidates waits about 2.5 s. See "Evaluation".
 - IDF is computed over the stored facts only. With few facts it is noisy. Raw history as a background corpus would make it steadier.
 - The proxy stores state files for every conversation and never deletes them.
 - The proxy does not read the `cache_control` breakpoints. It relies on two facts: it appends to the end of the system prompt, and it changes only the newest user message.

@@ -24,8 +24,10 @@ import (
 	"github.com/diffsec/bead/internal/eval"
 	"github.com/diffsec/bead/internal/fact"
 	"github.com/diffsec/bead/internal/index"
+	"github.com/diffsec/bead/internal/llm"
 	"github.com/diffsec/bead/internal/memory"
 	"github.com/diffsec/bead/internal/proxy"
+	"github.com/diffsec/bead/internal/recall"
 	"github.com/diffsec/bead/internal/store"
 )
 
@@ -407,10 +409,20 @@ func cmdProxy(ctx context.Context, args []string, out *printer) (err error) {
 	defer func() { err = errors.Join(err, m.Close()) }()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	ropt := recall.Defaults()
+	if rc := m.Config.Rerank; rc.Enabled {
+		client, err := llm.New(ctx, rc.LLM)
+		if err != nil {
+			return fmt.Errorf("proxy: rerank: %w", err)
+		}
+		ropt.Reranker = recall.LLMReranker{Client: client, Timeout: time.Duration(rc.TimeoutMS) * time.Millisecond}
+		ropt.Gate, ropt.Candidates = rc.Gate, rc.Candidates
+		logger.Info("rerank enabled", "provider", rc.Provider, "model", rc.Model, "timeout_ms", rc.TimeoutMS)
+	}
 	srv := &http.Server{
 		Addr: *listen,
 		Handler: proxy.New(proxy.Options{
-			Upstream: up, Memory: m, DefaultProject: *project, Logger: logger, Inject: !*noInject, TracePath: *tracePath,
+			Upstream: up, Memory: m, DefaultProject: *project, Logger: logger, Inject: !*noInject, TracePath: *tracePath, Recall: ropt,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

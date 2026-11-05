@@ -36,7 +36,7 @@ func server(t *testing.T, reply string) (*httptest.Server, *seen) {
 func TestAnthropic(t *testing.T) {
 	srv, s := server(t, `{"content":[{"type":"text","text":"{\"facts\":[]}"}],"stop_reason":"end_turn"}`)
 	t.Setenv("TEST_KEY", "k1")
-	c, err := New(context.Background(), config.Dream{Provider: config.ProviderAnthropic, Model: "m", BaseURL: srv.URL, APIKeyEnv: "TEST_KEY"})
+	c, err := New(context.Background(), config.LLM{Provider: config.ProviderAnthropic, Model: "m", BaseURL: srv.URL, APIKeyEnv: "TEST_KEY"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestAnthropic(t *testing.T) {
 
 func TestOpenAIWithKeyCommand(t *testing.T) {
 	srv, s := server(t, `{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}`)
-	c, err := New(context.Background(), config.Dream{Provider: config.ProviderOpenAI, Model: "m", BaseURL: srv.URL, APIKeyEnv: "UNSET_TEST_KEY", APIKeyCommand: "echo k2"})
+	c, err := New(context.Background(), config.LLM{Provider: config.ProviderOpenAI, Model: "m", BaseURL: srv.URL, APIKeyEnv: "UNSET_TEST_KEY", APIKeyCommand: "echo k2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestOpenAIWithKeyCommand(t *testing.T) {
 
 func TestOllama(t *testing.T) {
 	srv, s := server(t, `{"message":{"content":"{}"}}`)
-	c, err := New(context.Background(), config.Dream{Provider: config.ProviderOllama, Model: "llama", BaseURL: srv.URL})
+	c, err := New(context.Background(), config.LLM{Provider: config.ProviderOllama, Model: "llama", BaseURL: srv.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,15 +81,15 @@ func TestOllama(t *testing.T) {
 }
 
 func TestErrors(t *testing.T) {
-	if _, err := New(context.Background(), config.Dream{Provider: config.ProviderOllama}); err == nil {
+	if _, err := New(context.Background(), config.LLM{Provider: config.ProviderOllama}); err == nil {
 		t.Fatal("missing model accepted")
 	}
-	if _, err := New(context.Background(), config.Dream{Provider: config.ProviderAnthropic, Model: "m", APIKeyEnv: "UNSET_TEST_KEY"}); err == nil || !strings.Contains(err.Error(), "no API key") {
+	if _, err := New(context.Background(), config.LLM{Provider: config.ProviderAnthropic, Model: "m", APIKeyEnv: "UNSET_TEST_KEY"}); err == nil || !strings.Contains(err.Error(), "no API key") {
 		t.Fatalf("missing key: %v", err)
 	}
 	srv, _ := server(t, `{"error":"bad"}`)
 	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "overloaded", 529) })
-	c, _ := New(context.Background(), config.Dream{Provider: config.ProviderOllama, Model: "m", BaseURL: srv.URL})
+	c, _ := New(context.Background(), config.LLM{Provider: config.ProviderOllama, Model: "m", BaseURL: srv.URL})
 	if _, err := c.Complete(context.Background(), "s", "u"); err == nil || !strings.Contains(err.Error(), "529") {
 		t.Fatalf("status error: %v", err)
 	}

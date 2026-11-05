@@ -47,6 +47,14 @@ type Options struct {
 	// Peak scores a fact by its strongest shared term plus a quarter of
 	// the rest, so many weak matches cannot add up to a strong one.
 	Peak bool
+	// Reranker, when set, gets every candidate that scores at least Gate,
+	// up to Candidates of them, and decides which to inject. If it fails,
+	// the MinScore gate decides.
+	Reranker   Reranker
+	Gate       float64
+	Candidates int
+	// RerankErr receives a reranker error, for logs and traces.
+	RerankErr func(error)
 }
 
 // Defaults favour precision. On the held-out suite no scorer reached a
@@ -109,6 +117,11 @@ func Facts(ctx context.Context, m *memory.Memory, cues string, scopes []string, 
 		all = append(all, Candidate{Hit: h, Score: s})
 	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].Score > all[j].Score })
+	if opt.Reranker != nil {
+		if p, r, ok := rerank(ctx, cues, all, opt); ok {
+			return p, r, nil
+		}
+	}
 	for _, c := range all {
 		ok := c.Score >= opt.MinScore && len(picked) < opt.MaxFacts
 		if ok && opt.Relative > 0 && len(picked) > 0 && c.Score < opt.Relative*picked[0].Score {
@@ -288,4 +301,39 @@ func idfCoverage(text string, cues map[string]bool, df map[string]int, n int) fl
 		return 0
 	}
 	return have / total
+}
+
+// rerank sends the loose candidates to the reranker. ok is false when the
+// reranker failed and the strict gate must decide.
+func rerank(ctx context.Context, cues string, all []Candidate, opt Options) (picked, rejected []Candidate, ok bool) {
+	var cands []Candidate
+	for _, c := range all {
+		if c.Score >= opt.Gate && len(cands) < max(opt.Candidates, 1) {
+			cands = append(cands, c)
+		} else {
+			rejected = append(rejected, c)
+		}
+	}
+	if len(cands) == 0 {
+		return nil, rejected, true
+	}
+	ids, err := opt.Reranker.Rerank(ctx, cues, cands)
+	if err != nil {
+		if opt.RerankErr != nil {
+			opt.RerankErr(err)
+		}
+		return nil, nil, false
+	}
+	use := map[string]bool{}
+	for _, id := range ids {
+		use[id] = true
+	}
+	for _, c := range cands {
+		if use[c.Hit.ID] && len(picked) < opt.MaxFacts {
+			picked = append(picked, c)
+		} else {
+			rejected = append(rejected, c)
+		}
+	}
+	return picked, rejected, true
 }

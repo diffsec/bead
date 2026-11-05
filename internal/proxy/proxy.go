@@ -77,7 +77,12 @@ type Proxy struct {
 	opt Options
 	rp  *httputil.ReverseProxy
 
-	mu sync.Mutex // serialises state file updates
+	locks sync.Map // state key -> *sync.Mutex; serialises updates to one state file
+}
+
+func (p *Proxy) lockFor(key string) *sync.Mutex {
+	m, _ := p.locks.LoadOrStore(key, &sync.Mutex{})
+	return m.(*sync.Mutex)
 }
 
 // New returns a proxy.
@@ -155,9 +160,12 @@ func (p *Proxy) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		info.base = baseSession(r.Header, info.session)
 		tr.fill(req, info, r.Header)
-		p.mu.Lock()
+		// One lock per conversation: a rerank call takes seconds, and
+		// parallel subagents must not wait for each other.
+		mu := p.lockFor(stateKey(info.session, req))
+		mu.Lock()
 		b, err := p.process(context.WithValue(ctx, traceKey{}, tr), req, info)
-		p.mu.Unlock()
+		mu.Unlock()
 		if err != nil {
 			tr.Error = err.Error()
 			log.Error("memory; forwarding unchanged", "session", info.session, "err", err)
@@ -329,7 +337,18 @@ func (p *Proxy) recall(ctx context.Context, cues string, info *captureInfo, st *
 	}
 	cues = recall.CleanCues(cues)
 	cueTerms := recall.TermSet(cues)
-	picked, rejected, err := recall.Facts(ctx, p.opt.Memory, cues, p.scopes(info.project), func(id string) bool { return st.facts[id] }, p.opt.Recall)
+	opt := p.opt.Recall
+	tr, _ := ctx.Value(traceKey{}).(*trace)
+	if opt.Reranker != nil {
+		opt.Reranker = timedReranker{r: opt.Reranker, tr: tr}
+		opt.RerankErr = func(err error) {
+			p.opt.Logger.Warn("rerank failed; the strict gate decides", "session", info.session, "err", err)
+			if tr != nil {
+				tr.RerankError = err.Error()
+			}
+		}
+	}
+	picked, rejected, err := recall.Facts(ctx, p.opt.Memory, cues, p.scopes(info.project), func(id string) bool { return st.facts[id] }, opt)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -403,3 +422,19 @@ func escapeTag(s string) string {
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// timedReranker records the rerank latency in the trace.
+type timedReranker struct {
+	r  recall.Reranker
+	tr *trace
+}
+
+func (t timedReranker) Rerank(ctx context.Context, cues string, c []recall.Candidate) ([]string, error) {
+	start := time.Now()
+	ids, err := t.r.Rerank(ctx, cues, c)
+	if t.tr != nil {
+		t.tr.RerankMS = time.Since(start).Milliseconds()
+		t.tr.RerankCandidates = len(c)
+	}
+	return ids, err
+}

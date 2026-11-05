@@ -114,6 +114,15 @@ dream:
   decay_days: 60         # unused facts become dormant after this many days
   max_chunk_chars: 24000 # transcript characters per model call
   hour: 3                # local hour for the nightly run
+
+# A model checks injection candidates before the proxy adds them. It adds
+# about 2.5 s to a turn that has candidates. With no provider here it uses
+# the dream model. Set enabled: true once the dream model works.
+rerank:
+  enabled: false
+  timeout_ms: 4000  # after this the strict gate decides
+  candidates: 5
+  gate: 0.5
 `
 
 // writeDefaultConfig writes config.yaml if it does not exist. It reports

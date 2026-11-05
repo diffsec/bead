@@ -25,7 +25,7 @@ type Client interface {
 }
 
 // New returns the client for the configured provider.
-func New(ctx context.Context, d config.Dream) (Client, error) {
+func New(ctx context.Context, d config.LLM) (Client, error) {
 	if d.Model == "" {
 		return nil, fmt.Errorf("llm: dream.model is not set for provider %s", d.Provider)
 	}
@@ -49,7 +49,7 @@ func New(ctx context.Context, d config.Dream) (Client, error) {
 
 // apiKey reads the key from the named variable, or else from the output
 // of api_key_command.
-func apiKey(ctx context.Context, d config.Dream) (string, error) {
+func apiKey(ctx context.Context, d config.LLM) (string, error) {
 	if d.APIKeyEnv != "" {
 		if k := strings.TrimSpace(os.Getenv(d.APIKeyEnv)); k != "" {
 			return k, nil

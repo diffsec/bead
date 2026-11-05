@@ -26,6 +26,10 @@ type trace struct {
 	Injected  []string  `json:"injected,omitempty"`
 	Skipped   []string  `json:"skipped,omitempty"` // candidates below the threshold, with their coverage
 	Error     string    `json:"error,omitempty"`
+
+	RerankMS         int64  `json:"rerank_ms,omitempty"`
+	RerankCandidates int    `json:"rerank_candidates,omitempty"`
+	RerankError      string `json:"rerank_error,omitempty"`
 }
 
 type traceKey struct{}

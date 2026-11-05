@@ -3,12 +3,17 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/diffsec/bead/internal/recall"
 )
 
 // cc builds a request in Claude Code's shape: block-form system with an
@@ -178,5 +183,70 @@ func TestThreadIgnoresReminders(t *testing.T) {
 	b, _ := parseRequest([]byte(`{"messages":[{"role":"user","content":"<system-reminder>two</system-reminder>do the task"}]}`))
 	if stateKey("s", a) != stateKey("s", b) {
 		t.Fatal("a changed reminder started a new thread")
+	}
+}
+
+type slowReranker struct {
+	delay time.Duration
+	use   bool
+	err   error
+}
+
+func (s slowReranker) Rerank(ctx context.Context, _ string, c []recall.Candidate) ([]string, error) {
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if s.err != nil {
+		return nil, s.err
+	}
+	if !s.use {
+		return nil, nil
+	}
+	return []string{c[0].Hit.ID}, nil
+}
+
+func rerankFixture(t *testing.T, r recall.Reranker) *fixture {
+	t.Helper()
+	f := setup(t)
+	o := recall.Defaults()
+	o.Reranker, o.Gate, o.Candidates = r, 0.3, 5
+	u, _ := url.Parse(f.up2URL)
+	srv := httptest.NewServer(New(Options{Upstream: u, Memory: f.mem, Inject: true, Recall: o, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}))
+	t.Cleanup(srv.Close)
+	f.srv = srv
+	return f
+}
+
+func TestRerankDecides(t *testing.T) {
+	// The reranker rejects a candidate that the strict gate would inject.
+	f := rerankFixture(t, slowReranker{use: false})
+	f.post(t, "/v1/messages", cc(asst("ok"), userText("what port does the postgres database listen on")), map[string]string{"X-Claude-Code-Session-Id": "r1"})
+	if strings.Contains(string(upstreamMessages(t, f, 0)[3]), "5433") {
+		t.Fatal("the reranker said no, but the fact was injected")
+	}
+	// A failing reranker falls back to the strict gate.
+	f = rerankFixture(t, slowReranker{err: errors.New("down")})
+	f.post(t, "/v1/messages", cc(asst("ok"), userText("what port does the postgres database listen on")), map[string]string{"X-Claude-Code-Session-Id": "r2"})
+	if !strings.Contains(string(upstreamMessages(t, f, 0)[3]), "5433") {
+		t.Fatal("the fallback gate did not inject")
+	}
+}
+
+func TestParallelConversationsDoNotWait(t *testing.T) {
+	f := rerankFixture(t, slowReranker{delay: 600 * time.Millisecond, use: true})
+	start := time.Now()
+	var wg sync.WaitGroup
+	for _, s := range []string{"p1", "p2", "p3", "p4"} {
+		wg.Add(1)
+		go func(s string) {
+			defer wg.Done()
+			f.post(t, "/v1/messages", cc(asst("ok"), userText("what port does the postgres database listen on")), map[string]string{"X-Claude-Code-Session-Id": s})
+		}(s)
+	}
+	wg.Wait()
+	if took := time.Since(start); took > 1500*time.Millisecond {
+		t.Fatalf("4 conversations took %s; they waited on one lock", took)
 	}
 }
