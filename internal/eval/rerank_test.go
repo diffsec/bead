@@ -45,7 +45,7 @@ func (t *timed) pct(p float64) time.Duration {
 
 // TestRerank calls the configured rerank model over the network. It runs
 // only with BEAD_RERANK_EXPERIMENT=1, and BEAD_SPLIT=even scores the test
-// turns.
+// turns. BEAD_RERANK_MODEL replaces the configured model.
 func TestRerank(t *testing.T) {
 	if os.Getenv("BEAD_RERANK_EXPERIMENT") == "" {
 		t.Skip("set BEAD_RERANK_EXPERIMENT=1")
@@ -54,6 +54,9 @@ func TestRerank(t *testing.T) {
 	cfg, err := config.Load(filepath.Join(home, ".bead"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if m := os.Getenv("BEAD_RERANK_MODEL"); m != "" {
+		cfg.Rerank.Model = m
 	}
 	client, err := llm.New(context.Background(), cfg.Rerank.LLM)
 	if err != nil {
